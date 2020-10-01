@@ -124,8 +124,7 @@ class Uploader():
         return (key, fn)
 
     for name, key, fn in upload_files:
-      if name in self.immediate_priority:
-        return (key, fn)
+      return (key, fn)
 
     return None
 
@@ -141,7 +140,7 @@ class Uploader():
       headers = url_resp_json['headers']
       cloudlog.debug("upload_url v1.4 %s %s", url, str(headers))
 
-      if fake_upload:
+      if fake_upload or (not fn.endswith('rlog')):
         cloudlog.debug(f"*** WARNING, THIS IS A FAKE UPLOAD TO {url} ***")
 
         class FakeResponse():
@@ -149,6 +148,9 @@ class Uploader():
             self.status_code = 200
 
         self.last_resp = FakeResponse()
+
+        # delete file to keep as many rlogs as possible
+        os.remove(fn)
       else:
         with open(fn, "rb") as f:
           data = f.read()
@@ -156,7 +158,7 @@ class Uploader():
           if key.endswith('.bz2') and not fn.endswith('.bz2'):
             data = bz2.compress(data)
 
-          self.last_resp = requests.put(url, data=data, headers=headers, timeout=10)
+          self.last_resp = requests.put(url, data=data, headers=headers, timeout=100)
     except Exception as e:
       self.last_exc = (e, traceback.format_exc())
       raise

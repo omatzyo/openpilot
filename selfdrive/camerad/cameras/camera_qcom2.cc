@@ -31,6 +31,9 @@ const size_t FRAME_WIDTH = 1928;
 const size_t FRAME_HEIGHT = 1208;
 const size_t FRAME_STRIDE = 2896;  // for 12 bit output. 1928 * 12 / 8 + 4 (alignment)
 
+const size_t AR0231_REGISTERS_HEIGHT = 2;
+const size_t AR0231_STATS_HEIGHT = 2;
+
 const int MIPI_SETTLE_CNT = 33;  // Calculated by camera_freqs.py
 
 CameraInfo cameras_supported[CAMERA_ID_MAX] = {
@@ -38,17 +41,24 @@ CameraInfo cameras_supported[CAMERA_ID_MAX] = {
     .frame_width = FRAME_WIDTH,
     .frame_height = FRAME_HEIGHT,
     .frame_stride = FRAME_STRIDE,
+    .extra_height = AR0231_REGISTERS_HEIGHT + AR0231_STATS_HEIGHT,
+
+    .registers_offset = 0,
+    .frame_offset = AR0231_REGISTERS_HEIGHT,
+    .stats_offset = AR0231_REGISTERS_HEIGHT + FRAME_HEIGHT,
+
     .bayer = true,
     .bayer_flip = 1,
-    .hdr = false
+    .hdr = false,
   },
   [CAMERA_ID_IMX390] = {
     .frame_width = FRAME_WIDTH,
     .frame_height = FRAME_HEIGHT,
     .frame_stride = FRAME_STRIDE,
+
     .bayer = true,
     .bayer_flip = 1,
-    .hdr = false
+    .hdr = false,
   },
 };
 
@@ -509,10 +519,10 @@ void CameraState::config_isp(int io_mem_handle, int fence, int request_id, int b
   if (io_mem_handle != 0) {
     io_cfg[0].mem_handle[0] = io_mem_handle;
 		io_cfg[0].planes[0] = (struct cam_plane_cfg){
-		 .width = FRAME_WIDTH,
-		 .height = FRAME_HEIGHT,
-		 .plane_stride = FRAME_STRIDE,
-		 .slice_height = FRAME_HEIGHT,
+		 .width = ci.frame_width,
+		 .height = ci.frame_height + ci.extra_height,
+		 .plane_stride = ci.frame_stride,
+		 .slice_height = ci.frame_height + ci.extra_height,
 		 .meta_stride = 0x0,    // YUV has meta(stride=0x400, size=0x5000)
 		 .meta_size = 0x0,
 		 .meta_offset = 0x0,
@@ -682,23 +692,23 @@ void CameraState::camera_open() {
       .lane_cfg = 0x3210,
 
       .vc = 0x0,
-      .dt = 0x2C,  // CSI_RAW12
+      .dt = 0x12, // Changing stats to 0x2C doesn't work, so change pixels to 0x12 instead
       .format = CAM_FORMAT_MIPI_RAW_12,
 
       .test_pattern = 0x2,  // 0x3?
       .usage_type = 0x0,
 
       .left_start = 0,
-      .left_stop = FRAME_WIDTH - 1,
-      .left_width = FRAME_WIDTH,
+      .left_stop = ci.frame_width - 1,
+      .left_width = ci.frame_width,
 
       .right_start = 0,
-      .right_stop = FRAME_WIDTH - 1,
-      .right_width = FRAME_WIDTH,
+      .right_stop = ci.frame_width - 1,
+      .right_width = ci.frame_width,
 
       .line_start = 0,
-      .line_stop = FRAME_HEIGHT - 1,
-      .height = FRAME_HEIGHT,
+      .line_stop = ci.frame_height + ci.extra_height - 1,
+      .height = ci.frame_height + ci.extra_height,
 
       .pixel_clk = 0x0,
       .batch_size = 0x0,
@@ -710,8 +720,8 @@ void CameraState::camera_open() {
       .data[0] = (struct cam_isp_out_port_info){
           .res_type = CAM_ISP_IFE_OUT_RES_RDI_0,
           .format = CAM_FORMAT_MIPI_RAW_12,
-          .width = FRAME_WIDTH,
-          .height = FRAME_HEIGHT,
+          .width = ci.frame_width,
+          .height = ci.frame_height + ci.extra_height,
           .comp_grp_id = 0x0, .split_point = 0x0, .secure_mode = 0x0,
       },
   };
@@ -1135,7 +1145,6 @@ static void process_driver_camera(MultiCameraState *s, CameraState *c, int cnt) 
   s->pm->send("driverCameraState", msg);
 }
 
-// called by processing_thread
 void process_road_camera(MultiCameraState *s, CameraState *c, int cnt) {
   const CameraBuf *b = &c->buf;
 
@@ -1152,6 +1161,7 @@ void process_road_camera(MultiCameraState *s, CameraState *c, int cnt) {
     framed.setTransform(b->yuv_transform.v);
     LOGT(c->buf.cur_frame_data.frame_id, "%s: Transformed", "RoadCamera");
   }
+
   s->pm->send(c == &s->road_cam ? "roadCameraState" : "wideRoadCameraState", msg);
 
   const auto [x, y, w, h] = (c == &s->wide_road_cam) ? std::tuple(96, 250, 1734, 524) : std::tuple(96, 160, 1734, 986);
@@ -1221,3 +1231,4 @@ void cameras_run(MultiCameraState *s) {
 
   cameras_close(s);
 }
+

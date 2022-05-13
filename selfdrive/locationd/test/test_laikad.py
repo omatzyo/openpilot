@@ -35,8 +35,9 @@ class TestLaikad(unittest.TestCase):
 
     self.assertEqual(msg.pseudorange, new_float)
 
-  def test_ephemeris(self):
+  def test_ephemeris_and_process_measurements(self):
     lr = get_log(range(1))
+    # Set to offline forces to use ephemeris messages
     dog = AstroDog(use_internet=False)
 
     good_msg = None

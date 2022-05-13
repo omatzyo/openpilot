@@ -22,22 +22,27 @@ def process_ublox_msg(ublox_msg, dog: AstroDog, ublox_mono_time: int, correct=Fa
     if len(measurements) == 0:
       return None
 
-      # pos fix needs more than 5 processed_measurements
     if correct:
-      pos_fix = calc_pos_fix(measurements)[0]
-      if len(pos_fix) > 0:
-        measurements = correct_measurements(measurements, pos_fix[:3], dog)
+      # pos fix needs more than 5 processed_measurements
+      pos_fix = calc_pos_fix(measurements)
+      if len(pos_fix) == 0:
+        return None
+      measurements = correct_measurements(measurements, pos_fix[0][:3], dog)
+      if len(measurements) == 0:
+        return None
     # pos or vel fixes can be an empty list if not enough correct measurements are available
-    correct_meas_msgs = [create_measurement_msg(m) for m in measurements]
+    meas_msgs = [create_measurement_msg(m) for m in measurements]
 
     dat = messaging.new_message('gnssMeasurements')
     dat.gnssMeasurements = {
+      "positionECEF": [0., 0., 0.],
+      "velocityECEF": [0., 0., 0.],
       "ubloxMonoTime": ublox_mono_time,
-      "correctedMeasurements": correct_meas_msgs
+      "correctedMeasurements": meas_msgs
     }
     return dat
-  elif ublox_msg.which == 'ephemeris' and time_first_gnss_message is not None:
-    ephem = convert_ublox_ephem(ublox_msg.ephemeris, time_first_gnss_message)
+  elif ublox_msg.which == 'ephemeris':
+    ephem = convert_ublox_ephem(ublox_msg.ephemeris)
     dog.add_ephem(ephem, dog.orbits)
   # elif ublox_msg.which == 'ionoData': # todo add this. Needed to correct messages offline. First fix ublox_msg.cc to sent them.
 
@@ -62,7 +67,7 @@ def create_measurement_msg(meas: GNSSMeasurement):
 
 
 def main():
-  dog = AstroDog()
+  dog = AstroDog(use_internet=False)
   sm = messaging.SubMaster(['ubloxGnss'])
   pm = messaging.PubMaster(['gnssMeasurements'])
 

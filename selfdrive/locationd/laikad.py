@@ -23,14 +23,12 @@ def process_ublox_msg(ublox_msg, dog: AstroDog, ublox_mono_time: int, correct=Fa
       return None
 
       # pos fix needs more than 5 processed_measurements
-    corrected = False
     if correct:
       pos_fix = calc_pos_fix(measurements)[0]
       if len(pos_fix) > 0:
         measurements = correct_measurements(measurements, pos_fix[:3], dog)
-        corrected = True
     # pos or vel fixes can be an empty list if not enough correct measurements are available
-    correct_meas_msgs = [create_measurement_msg(m, corrected) for m in measurements]
+    correct_meas_msgs = [create_measurement_msg(m) for m in measurements]
 
     dat = messaging.new_message('gnssMeasurements')
     dat.gnssMeasurements = {
@@ -44,11 +42,11 @@ def process_ublox_msg(ublox_msg, dog: AstroDog, ublox_mono_time: int, correct=Fa
   # elif ublox_msg.which == 'ionoData': # todo add this. Needed to correct messages offline. First fix ublox_msg.cc to sent them.
 
 
-def create_measurement_msg(meas: GNSSMeasurement, corrected):
+def create_measurement_msg(meas: GNSSMeasurement):
   c = log.GnssMeasurements.CorrectedMeasurement.new_message()
   c.constellationId = meas.constellation_id.value
   c.svId = int(meas.prn[1:])
-  if corrected:
+  if len(meas.observables_final) > 0:
     observables = meas.observables_final
   else:
     observables = meas.observables

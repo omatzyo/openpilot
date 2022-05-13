@@ -2,8 +2,6 @@
 import unittest
 from datetime import datetime
 
-from diskcache import Cache
-
 from laika import AstroDog
 from laika.helpers import ConstellationId
 
@@ -12,10 +10,8 @@ from laika.raw_gnss import GNSSMeasurement
 from selfdrive.locationd.laikad import create_measurement_msg, process_ublox_msg
 from selfdrive.test.openpilotci import get_url
 from tools.lib.logreader import LogReader
-cache = Cache("cachedir")
 
 
-@cache.memoize()
 def get_log(segs=range(0)):
   logs = []
   for i in segs:
@@ -29,14 +25,15 @@ class TestLaikad(unittest.TestCase):
     gpstime = GPSTime.from_datetime(datetime.now())
     meas = GNSSMeasurement(ConstellationId.GPS, 1, gpstime.week, gpstime.tow, {'C1C': 0., 'D1C': 0.}, {'C1C': 0., 'D1C': 0.})
     # Test creating uncorrected measurement
-    msg = create_measurement_msg(meas, corrected=False)
+    msg = create_measurement_msg(meas)
     self.assertEqual(msg.constellationId, 'gps')
 
-    # Fake observables_final to be correct
-    meas.observables_final = meas.observables
-    msg = create_measurement_msg(meas, corrected=True)
+    # Set observables_final and check if function also uses final data
+    new_float = 1.
+    meas.observables_final = {'C1C': new_float, 'D1C': 0.}
+    msg = create_measurement_msg(meas)
 
-    self.assertEqual(msg.constellationId, 'gps')
+    self.assertEqual(msg.pseudorange, new_float)
 
   def test_ephemeris(self):
     lr = get_log(range(1))

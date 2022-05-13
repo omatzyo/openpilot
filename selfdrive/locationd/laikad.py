@@ -1,61 +1,62 @@
 #!/usr/bin/env python3
-from typing import List
-
 from cereal import log, messaging
 from laika import AstroDog
+from laika.gps_time import GPSTime
 from laika.helpers import ConstellationId
-from laika.raw_gnss import GNSSMeasurement, calc_pos_fix, calc_vel_fix, correct_measurements, process_measurements, read_raw_ublox
+from laika.ephemeris import convert_ublox_ephem
+from laika.raw_gnss import GNSSMeasurement, calc_pos_fix, correct_measurements, process_measurements, read_raw_ublox
+
+time_first_gnss_message = None
 
 
-def correct_and_vel_pos_fix(processed_measurements: List[GNSSMeasurement], dog: AstroDog):
-  # pos fix needs more than 5 processed_measurements
-  pos_fix = calc_pos_fix(processed_measurements)
-
-  if len(pos_fix) == 0:
-    return [], [], []
-  est_pos = pos_fix[0][:3]
-  corrected = correct_measurements(processed_measurements, est_pos, dog)
-  corrected_pos = calc_pos_fix(corrected)
-  corrected_vel = calc_vel_fix(corrected, corrected_pos[0])
-  return corrected_pos, corrected_vel, corrected
-
-
-def process_ublox_msg(ublox_msg, dog, ublox_mono_time: int):
+def process_ublox_msg(ublox_msg, dog: AstroDog, ublox_mono_time: int, correct=False):
+  global time_first_gnss_message
   if ublox_msg.which == 'measurementReport':
     report = ublox_msg.measurementReport
     if len(report.measurements) == 0:
       return None
     new_meas = read_raw_ublox(report)
-    processed_measurements = process_measurements(new_meas, dog)
+    if time_first_gnss_message is None:
+      time_first_gnss_message = GPSTime(report.gpsWeek, report.rcvTow)
+    measurements = process_measurements(new_meas, dog)
+    if len(measurements) == 0:
+      return None
 
-    pos_fix, vel_fix, corrected_measurements = correct_and_vel_pos_fix(processed_measurements, dog)
+      # pos fix needs more than 5 processed_measurements
+    corrected = False
+    if correct:
+      pos_fix = calc_pos_fix(measurements)[0]
+      if len(pos_fix) > 0:
+        measurements = correct_measurements(measurements, pos_fix[:3], dog)
+        corrected = True
     # pos or vel fixes can be an empty list if not enough correct measurements are available
-    correct_meas_msgs = [create_measurement_msg(m) for m in corrected_measurements]
-
-    if len(pos_fix) > 0:
-      corrected_pos = pos_fix[0][:3].tolist()
-      corrected_vel = vel_fix[0][:3].tolist()
-    else:
-      corrected_pos = corrected_vel = [0., 0., 0.]
+    correct_meas_msgs = [create_measurement_msg(m, corrected) for m in measurements]
 
     dat = messaging.new_message('gnssMeasurements')
     dat.gnssMeasurements = {
-      "positionECEF": corrected_pos,
-      "velocityECEF": corrected_vel,
       "ubloxMonoTime": ublox_mono_time,
       "correctedMeasurements": correct_meas_msgs
     }
     return dat
+  elif ublox_msg.which == 'ephemeris' and time_first_gnss_message is not None:
+    ephem = convert_ublox_ephem(ublox_msg.ephemeris, time_first_gnss_message)
+    dog.add_ephem(ephem, dog.orbits)
+  # elif ublox_msg.which == 'ionoData': # todo add this. Needed to correct messages offline. First fix ublox_msg.cc to sent them.
 
 
-def create_measurement_msg(meas: GNSSMeasurement):
+def create_measurement_msg(meas: GNSSMeasurement, corrected):
   c = log.GnssMeasurements.CorrectedMeasurement.new_message()
   c.constellationId = meas.constellation_id.value
   c.svId = int(meas.prn[1:])
+  if corrected:
+    observables = meas.observables_final
+  else:
+    observables = meas.observables
+
   c.glonassFrequency = meas.glonass_freq if meas.constellation_id == ConstellationId.GLONASS else 0
-  c.pseudorange = float(meas.observables_final['C1C'])
+  c.pseudorange = float(observables['C1C'])
   c.pseudorangeStd = float(meas.observables_std['C1C'])
-  c.pseudorangeRate = float(meas.observables_final['D1C'])
+  c.pseudorangeRate = float(observables['D1C'])
   c.pseudorangeRateStd = float(meas.observables_std['D1C'])
   c.satPos = meas.sat_pos_final.tolist()
   c.satVel = meas.sat_vel.tolist()

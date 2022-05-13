@@ -48,7 +48,7 @@ public:
     CL_CHECK(clReleaseProgram(prg_debayer));
   }
 
-  void queue(cl_command_queue q, cl_mem cam_buf_cl, cl_mem buf_cl, int width, int height, float gain, float black_level, cl_event *debayer_event) {
+  void queue(cl_command_queue q, cl_mem cam_buf_cl, cl_mem buf_cl, int width, int height, float gain, float black_level, float geometric_mean, cl_event *debayer_event) {
     CL_CHECK(clSetKernelArg(krnl_, 0, sizeof(cl_mem), &cam_buf_cl));
     CL_CHECK(clSetKernelArg(krnl_, 1, sizeof(cl_mem), &buf_cl));
 
@@ -58,6 +58,7 @@ public:
     const size_t localWorkSize[] = {debayer_local_worksize, debayer_local_worksize};
     CL_CHECK(clSetKernelArg(krnl_, 2, localMemSize, 0));
     CL_CHECK(clSetKernelArg(krnl_, 3, sizeof(float), &black_level));
+    CL_CHECK(clSetKernelArg(krnl_, 4, sizeof(float), &geometric_mean));
     CL_CHECK(clEnqueueNDRangeKernel(q, krnl_, 2, NULL, globalWorkSize, localWorkSize, 0, 0, debayer_event));
   }
 
@@ -145,9 +146,13 @@ bool CameraBuf::acquire() {
   cl_mem camrabuf_cl = camera_bufs[cur_buf_idx].buf_cl;
   cl_event event;
 
+  cur_camera_buf = &camera_bufs[cur_buf_idx];
+
+  // Parse histogram to find mean/max for tone mapping
+  cur_frame_data.histogram_geometric_mean = camera_state->ar0231_get_geometric_mean(cur_camera_buf);
+
   double start_time = millis_since_boot();
 
-  cur_camera_buf = &camera_bufs[cur_buf_idx];
 
   if (debayer) {
     float gain = 0.0;
@@ -158,7 +163,7 @@ bool CameraBuf::acquire() {
 #else
     if (camera_state->camera_id == CAMERA_ID_IMX390) black_level = 64.0;
 #endif
-    debayer->queue(q, camrabuf_cl, cur_yuv_buf->buf_cl, rgb_width, rgb_height, gain, black_level, &event);
+    debayer->queue(q, camrabuf_cl, cur_yuv_buf->buf_cl, rgb_width, rgb_height, gain, black_level, cur_frame_data.histogram_geometric_mean, &event);
   } else {
     assert(rgb_stride == camera_state->ci.frame_stride);
     rgb2yuv->queue(q, camrabuf_cl, cur_rgb_buf->buf_cl);

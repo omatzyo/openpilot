@@ -22,17 +22,11 @@ const __constant half3 color_correction_0 = (half3)(1.82717181, -0.31231438, 0.0
 const __constant half3 color_correction_1 = (half3)(-0.5743977, 1.36858544, -0.53183455);
 const __constant half3 color_correction_2 = (half3)(-0.25277411, -0.05627105, 1.45875782);
 
-// tone mapping params
-const half gamma_k = 0.75;
-const half gamma_b = 0.125;
-const half mp = 0.01; // ideally midpoint should be adaptive
-const half rk = 9 - 100*mp;
-
-inline half3 gamma_apply(half3 x) {
-  // poly approximation for s curve
-  return (x > mp) ?
-    ((rk * (x-mp) * (1-(gamma_k*mp+gamma_b)) * (1+1/(rk*(1-mp))) / (1+rk*(x-mp))) + gamma_k*mp + gamma_b) :
-    ((rk * (x-mp) * (gamma_k*mp+gamma_b) * (1+1/(rk*mp)) / (1-rk*(x-mp))) + gamma_k*mp + gamma_b);
+inline half3 gamma_apply(half3 p) {
+  // go all out and add an sRGB gamma curve
+  const half3 ph = (1.0 + 0.055)*pow(p, 1/2.4) - 0.055;
+       const half3 pl = p*12.92;
+       return select(ph, pl, islessequal(p, 0.0031308));
 }
 
 inline half3 color_correct(half3 rgb) {
@@ -40,6 +34,33 @@ inline half3 color_correct(half3 rgb) {
   ret += (half)rgb.y * color_correction_1;
   ret += (half)rgb.z * color_correction_2;
   return gamma_apply(ret);
+}
+
+float decompress_12(uint compressed) {
+  // decompress - Legacy kneepoints
+  float kn_0 = compressed;
+  float kn_2048 = (kn_0 - 2048) * 64 + 2048;
+  float kn_3040 = (kn_0 - 3040) * 1024 + 65536;
+  return max(kn_0, max(kn_2048, kn_3040));
+}
+
+half tonemap(float input, half geometric_mean) {
+  // https://www.cl.cam.ac.uk/teaching/1718/AdvGraph/06_HDR_and_tone_mapping.pdf
+  // Power function (slide 15)
+  // half percentile_99 = 8704.0;
+  // half pv = pow(decompressed / percentile_99, (half)0.6) * 0.50;
+
+  // Sigmoidal tone mapping (slide 30)
+
+  // Optimized case of b = 1
+  float decompressed_times_a = input * 0.3;
+  float pv = decompressed_times_a / (geometric_mean + decompressed_times_a);
+
+  // half b = 1.0;
+  // float pow_b = pow(decompressed, b);
+  // float pv = pow_b / (pow(geometric_mean / a, b) + pow_b);
+
+  return pv;
 }
 
 inline half get_vignetting_s(float r) {
@@ -54,17 +75,21 @@ inline half get_vignetting_s(float r) {
   }
 }
 
-inline half val_from_10(const uchar * source, int gx, int gy, half black_level) {
+inline half val_from_10(const uchar * source, int gx, int gy, half black_level, half geometric_mean) {
   // parse 12bit
   int start = gy * FRAME_STRIDE + (3 * (gx / 2)) + (FRAME_STRIDE * FRAME_OFFSET);
   int offset = gx % 2;
-  uint major = (uint)source[start + offset] << 4;
-  uint minor = (source[start + 2] >> (4 * offset)) & 0xf;
-  half pv = (half)((major + minor)/4);
 
-  // normalize
-  pv = max((half)0.0, pv - black_level);
-  pv /= (1024.0 - black_level);
+  uint compressed = (uint)source[start + offset] << 4;
+  compressed |= (source[start + 2] >> (4 * offset)) & 0xf;
+
+  float decompressed = decompress_12(compressed);
+
+  decompressed -= black_level * 4;
+  half pv = tonemap(decompressed, geometric_mean);
+
+  // Original (non HDR)
+  // half pv = decompressed / 4096.0;
 
   // correct vignetting
   if (CAM_NUM == 1) { // fcamera
@@ -84,7 +109,8 @@ inline half get_k(half a, half b, half c, half d) {
 __kernel void debayer10(const __global uchar * in,
                         __global uchar * out,
                         __local half * cached,
-                        float black_level
+                        float black_level,
+                        float geometric_mean
                        )
 {
   const int gid_x = get_global_id(0);
@@ -108,34 +134,34 @@ __kernel void debayer10(const __global uchar * in,
   int localColOffset = 0;
   int globalColOffset;
 
-  cached[mad24(y_local + 0, localRowLen, x_local + 0)] = val_from_10(in, x_global + 0, y_global + 0, black_level);
-  cached[mad24(y_local + 0, localRowLen, x_local + 1)] = val_from_10(in, x_global + 1, y_global + 0, black_level);
-  cached[mad24(y_local + 1, localRowLen, x_local + 0)] = val_from_10(in, x_global + 0, y_global + 1, black_level);
-  cached[mad24(y_local + 1, localRowLen, x_local + 1)] = val_from_10(in, x_global + 1, y_global + 1, black_level);
+  cached[mad24(y_local + 0, localRowLen, x_local + 0)] = val_from_10(in, x_global + 0, y_global + 0, black_level, geometric_mean);
+  cached[mad24(y_local + 0, localRowLen, x_local + 1)] = val_from_10(in, x_global + 1, y_global + 0, black_level, geometric_mean);
+  cached[mad24(y_local + 1, localRowLen, x_local + 0)] = val_from_10(in, x_global + 0, y_global + 1, black_level, geometric_mean);
+  cached[mad24(y_local + 1, localRowLen, x_local + 1)] = val_from_10(in, x_global + 1, y_global + 1, black_level, geometric_mean);
 
   if (lid_x == 0) {  // left edge
     localColOffset = -1;
     globalColOffset = -x_global_mod;
-    cached[mad24(y_local + 0, localRowLen, x_local - 1)] = val_from_10(in, x_global - x_global_mod, y_global + 0, black_level);
-    cached[mad24(y_local + 1, localRowLen, x_local - 1)] = val_from_10(in, x_global - x_global_mod, y_global + 1, black_level);
+    cached[mad24(y_local + 0, localRowLen, x_local - 1)] = val_from_10(in, x_global - x_global_mod, y_global + 0, black_level, geometric_mean);
+    cached[mad24(y_local + 1, localRowLen, x_local - 1)] = val_from_10(in, x_global - x_global_mod, y_global + 1, black_level, geometric_mean);
   } else if (lid_x == get_local_size(0) - 1) {  // right edge
     localColOffset = 2;
     globalColOffset = x_global_mod + 1;
-    cached[mad24(y_local + 0, localRowLen, x_local + 2)] = val_from_10(in, x_global + x_global_mod + 1, y_global + 0, black_level);
-    cached[mad24(y_local + 1, localRowLen, x_local + 2)] = val_from_10(in, x_global + x_global_mod + 1, y_global + 1, black_level);
+    cached[mad24(y_local + 0, localRowLen, x_local + 2)] = val_from_10(in, x_global + x_global_mod + 1, y_global + 0, black_level, geometric_mean);
+    cached[mad24(y_local + 1, localRowLen, x_local + 2)] = val_from_10(in, x_global + x_global_mod + 1, y_global + 1, black_level, geometric_mean);
   }
 
   if (lid_y == 0) {  // top row
-    cached[mad24(y_local - 1, localRowLen, x_local + 0)] = val_from_10(in, x_global + 0, y_global - y_global_mod, black_level);
-    cached[mad24(y_local - 1, localRowLen, x_local + 1)] = val_from_10(in, x_global + 1, y_global - y_global_mod, black_level);
+    cached[mad24(y_local - 1, localRowLen, x_local + 0)] = val_from_10(in, x_global + 0, y_global - y_global_mod, black_level, geometric_mean);
+    cached[mad24(y_local - 1, localRowLen, x_local + 1)] = val_from_10(in, x_global + 1, y_global - y_global_mod, black_level, geometric_mean);
     if (localColOffset != 0) {  // cache corners
-      cached[mad24(y_local - 1, localRowLen, x_local + localColOffset)] = val_from_10(in, x_global + globalColOffset, y_global - y_global_mod, black_level);
+      cached[mad24(y_local - 1, localRowLen, x_local + localColOffset)] = val_from_10(in, x_global + globalColOffset, y_global - y_global_mod, black_level, geometric_mean);
     }
   } else if (lid_y == get_local_size(1) - 1) {  // bottom row
-    cached[mad24(y_local + 2, localRowLen, x_local + 0)] = val_from_10(in, x_global + 0, y_global + y_global_mod + 1, black_level);
-    cached[mad24(y_local + 2, localRowLen, x_local + 1)] = val_from_10(in, x_global + 1, y_global + y_global_mod + 1, black_level);
+    cached[mad24(y_local + 2, localRowLen, x_local + 0)] = val_from_10(in, x_global + 0, y_global + y_global_mod + 1, black_level, geometric_mean);
+    cached[mad24(y_local + 2, localRowLen, x_local + 1)] = val_from_10(in, x_global + 1, y_global + y_global_mod + 1, black_level, geometric_mean);
     if (localColOffset != 0) {  // cache corners
-      cached[mad24(y_local + 2, localRowLen, x_local + localColOffset)] = val_from_10(in, x_global + globalColOffset, y_global + y_global_mod + 1, black_level);
+      cached[mad24(y_local + 2, localRowLen, x_local + localColOffset)] = val_from_10(in, x_global + globalColOffset, y_global + y_global_mod + 1, black_level, geometric_mean);
     }
   }
 

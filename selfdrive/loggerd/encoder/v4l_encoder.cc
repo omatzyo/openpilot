@@ -38,6 +38,7 @@ static void dequeue_buffer(int fd, v4l2_buf_type buf_type, unsigned int *index=N
 }
 
 static void queue_buffer(int fd, v4l2_buf_type buf_type, unsigned int index, VisionBuf *buf, struct timeval timestamp={0}) {
+  //printf("%zu %p %d\n", buf->len, buf->addr, buf->fd);
   v4l2_plane plane = {
     .length = (unsigned int)buf->len,
     .m = { .userptr = (unsigned long)buf->addr, },
@@ -248,7 +249,7 @@ void V4LEncoder::encoder_init() {
   // queue up input buffers
   // 4804608
   for (unsigned int i = 0; i < BUF_IN_COUNT; i++) {
-    buf_in[i].allocate(fmt_in.fmt.pix_mp.plane_fmt[0].sizeimage);
+    //buf_in[i].allocate(fmt_in.fmt.pix_mp.plane_fmt[0].sizeimage);
     //buf_in[i].allocate(3735552);
     free_buf_in.push(i);
   }
@@ -274,6 +275,7 @@ int V4LEncoder::encode_frame_vipc(VisionBuf* buf, VisionIpcBufExtra *extra) {
 
   // push buffer
   extras.push(*extra);
+  //buf->sync(VISIONBUF_SYNC_TO_DEVICE);
   queue_buffer(fd, V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, buffer_in, buf, timestamp);
 
   return this->counter++;

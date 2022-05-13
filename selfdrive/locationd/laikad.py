@@ -35,8 +35,6 @@ def process_ublox_msg(ublox_msg, dog: AstroDog, ublox_mono_time: int, correct=Fa
 
     dat = messaging.new_message('gnssMeasurements')
     dat.gnssMeasurements = {
-      "positionECEF": [0., 0., 0.],
-      "velocityECEF": [0., 0., 0.],
       "ubloxMonoTime": ublox_mono_time,
       "correctedMeasurements": meas_msgs
     }

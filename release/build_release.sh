@@ -13,16 +13,13 @@ if [ -f /TICI ]; then
   FILES_SRC="release/files_tici"
   RELEASE_BRANCH=release3-staging
   DASHCAM_BRANCH=dashcam3-staging
-elif [ -f /EON ]; then
-  FILES_SRC="release/files_eon"
-  RELEASE_BRANCH=release2-staging
-  DASHCAM_BRANCH=dashcam-staging
 else
   exit 0
 fi
 
 # set git identity
 source $DIR/identity.sh
+export GIT_SSH_COMMAND="ssh -i /data/gitkey"
 
 echo "[-] Setting up repo T=$SECONDS"
 rm -rf $BUILD_DIR
